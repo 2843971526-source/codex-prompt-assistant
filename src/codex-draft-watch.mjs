@@ -31,6 +31,6 @@ while (true) {
     next.once("exit", clear);
     next.once("error", clear);
   }
-  await delay(4000);
+  await delay(child ? 15000 : 8000);
 }
 

@@ -9,9 +9,25 @@ try {
   }
   $owned = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.ExecutablePath -eq (Join-Path $InstallPath 'runtime\node.exe') })
   if ($owned.Count) { throw 'The installed assistant is running. Exit its processes before updating; existing files were not changed.' }
-  New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
-  Copy-Item -LiteralPath (Join-Path $source 'runtime'),(Join-Path $source 'src') -Destination $InstallPath -Recurse -Force
-  foreach ($f in @('launch.ps1','watch.vbs','launch.vbs','uninstall.ps1','diagnose.ps1','README.md')) { Copy-Item -LiteralPath (Join-Path $source $f) -Destination $InstallPath -Force }
+  $items = @('runtime','src','launch.ps1','watch.vbs','launch.vbs','uninstall.ps1','diagnose.ps1','README.md')
+  $backup = Join-Path ([IO.Path]::GetTempPath()) ('codex-prompt-backup-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $InstallPath,$backup -Force | Out-Null
+  $saved = @(); $created = @()
+  try {
+    foreach ($f in $items) {
+      $target = Join-Path $InstallPath $f
+      if (Test-Path -LiteralPath $target) { Copy-Item -LiteralPath $target -Destination $backup -Recurse -Force; $saved += $f }
+      else { $created += $f }
+      $incoming = Join-Path $source $f
+      if ((Test-Path -LiteralPath $incoming -PathType Container) -and (Test-Path -LiteralPath $target -PathType Container)) {
+        Get-ChildItem -LiteralPath $incoming -Force | Copy-Item -Destination $target -Recurse -Force
+      } else { Copy-Item -LiteralPath $incoming -Destination $InstallPath -Recurse -Force }
+    }
+  } catch {
+    foreach ($f in $created) { $target = Join-Path $InstallPath $f; if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force } }
+    foreach ($f in $saved) { $target = Join-Path $InstallPath $f; if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }; Copy-Item -LiteralPath (Join-Path $backup $f) -Destination $InstallPath -Recurse -Force }
+    throw
+  } finally { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue }
   if (-not $TestMode) {
     $shell = New-Object -ComObject WScript.Shell
     $startup = [Environment]::GetFolderPath('Startup')
