@@ -12,7 +12,7 @@ try {
   $items = @('runtime','src','launch.ps1','watch.vbs','launch.vbs','uninstall.ps1','diagnose.ps1','README.md')
   $backup = Join-Path ([IO.Path]::GetTempPath()) ('codex-prompt-backup-' + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $InstallPath,$backup -Force | Out-Null
-  $saved = @(); $created = @()
+  $saved = @(); $created = @(); $keepBackup = $false
   try {
     foreach ($f in $items) {
       $target = Join-Path $InstallPath $f
@@ -24,10 +24,12 @@ try {
       } else { Copy-Item -LiteralPath $incoming -Destination $InstallPath -Recurse -Force }
     }
   } catch {
+    try {
     foreach ($f in $created) { $target = Join-Path $InstallPath $f; if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force } }
     foreach ($f in $saved) { $target = Join-Path $InstallPath $f; if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }; Copy-Item -LiteralPath (Join-Path $backup $f) -Destination $InstallPath -Recurse -Force }
+    } catch { $keepBackup = $true; throw "Rollback failed; backup retained at $backup. $($_.Exception.Message)" }
     throw
-  } finally { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue }
+  } finally { if (-not $keepBackup) { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue } }
   if (-not $TestMode) {
     $shell = New-Object -ComObject WScript.Shell
     $startup = [Environment]::GetFolderPath('Startup')
