@@ -1,4 +1,4 @@
-param([string]$InstallPath = "$env:LOCALAPPDATA\CodexPromptAssistant", [switch]$TestMode)
+﻿param([string]$InstallPath = "$env:LOCALAPPDATA\CodexPromptAssistant", [switch]$TestMode)
 $ErrorActionPreference = 'Stop'
 try {
   $source = $PSScriptRoot
@@ -7,9 +7,11 @@ try {
   foreach ($f in @('runtime\node.exe','runtime\NODE-LICENSE.txt','src\codex-draft-button.mjs','src\codex-draft-rewrite.mjs','src\codex-draft-watch.mjs','launch.ps1','watch.vbs','launch.vbs','uninstall.ps1')) {
     if (-not (Test-Path -LiteralPath (Join-Path $source $f) -PathType Leaf)) { throw "Missing file: $f" }
   }
+  $owned = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.ExecutablePath -eq (Join-Path $InstallPath 'runtime\node.exe') })
+  if ($owned.Count) { throw 'The installed assistant is running. Exit its processes before updating; existing files were not changed.' }
   New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
   Copy-Item -LiteralPath (Join-Path $source 'runtime'),(Join-Path $source 'src') -Destination $InstallPath -Recurse -Force
-  foreach ($f in @('launch.ps1','watch.vbs','launch.vbs','uninstall.ps1','README.md')) { Copy-Item -LiteralPath (Join-Path $source $f) -Destination $InstallPath -Force }
+  foreach ($f in @('launch.ps1','watch.vbs','launch.vbs','uninstall.ps1','diagnose.ps1','README.md')) { Copy-Item -LiteralPath (Join-Path $source $f) -Destination $InstallPath -Force }
   if (-not $TestMode) {
     $shell = New-Object -ComObject WScript.Shell
     $startup = [Environment]::GetFolderPath('Startup')
@@ -20,6 +22,11 @@ try {
     $shortcut.Save()
     $programs = Join-Path ([Environment]::GetFolderPath('Programs')) 'Codex Prompt Assistant'
     New-Item -ItemType Directory -Path $programs -Force | Out-Null
+    $shortcut = $shell.CreateShortcut((Join-Path $programs 'Check Prompt Assistant.lnk'))
+    $shortcut.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $InstallPath 'diagnose.ps1') + '"'
+    $shortcut.WorkingDirectory = $InstallPath
+    $shortcut.Save()
     $shortcut = $shell.CreateShortcut((Join-Path $programs 'Start Codex with Prompt Assistant.lnk'))
     $shortcut.TargetPath = "$env:SystemRoot\System32\wscript.exe"
     $shortcut.Arguments = '//B //NoLogo "' + (Join-Path $InstallPath 'launch.vbs') + '"'
