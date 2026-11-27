@@ -147,9 +147,9 @@ export function installButton(_referencesPreviousTurn, readRecentContext) {
       return flash(editor, button, "草稿已变更");
     }
     const {status, text: candidate} = typeof result === "object" && result ? result : {status: result ? "ok" : "invalid", text: result};
-    if (status !== "ok" && status !== "review") {
+    if (status !== "ok") {
       const message = {offline:"Ollama 未连接", "missing-model":"缺少 qwen3.5:4b", timeout:"Ollama 响应超时", "service-error":"Ollama 服务异常", cancelled:"已取消"}[status] || "优化失败";
-      return flash(editor, button, request.translate && status === "invalid" ? "译文校验未通过，已保留原文" : message, 5000);
+      return flash(editor, button, status === "invalid" ? (request.translate ? "译文校验未通过，已保留原文" : "增强结果校验未通过，已保留原文") : message, 5000);
     }
     function replace(value, length, expected) {
       const selection = document.getSelection();
@@ -173,10 +173,9 @@ export function installButton(_referencesPreviousTurn, readRecentContext) {
       selection.addRange(range);
       document.execCommand("insertText", false, value);
     }
-    if (status === "review") return flash(editor, button, "可能改变原意，已保留原文");
     if (typeof candidate !== "string" || !candidate.trim() || candidate.trim() === draft) return flash(editor, button, request.translate ? "原文无需翻译" : "原文无需改写");
     const text = part
-      ? part.text.match(/^\s*/)[0] + candidate.trim() + part.text.match(/\s*$/)[0]
+      ? part.text.match(/^\s*/)[0] + candidate.trim().replace(/[\r\n\u2028\u2029]+\s*/g, ' ') + part.text.match(/\s*$/)[0]
       : candidate;
     if (part && /[\r\n\u2028\u2029]/.test(text)) return flash(editor, button, "选区增强仅支持单段结果");
     const before = editorText(editor);
@@ -293,7 +292,7 @@ export function installButton(_referencesPreviousTurn, readRecentContext) {
     try {
       const context = !translate && sameChat(request) ? readRecentContext(editor) : null;
       if (!sameChat(request)) return cancel(request);
-      window.__requestLocalDraftRewrite(JSON.stringify({key, text, ...(translate ? {translate:true} : {}), ...(context ? {context} : {})}));
+      window.__requestLocalDraftRewrite(JSON.stringify({key, text, ...(translate ? {translate:true} : part ? {selection:true} : {}), ...(context ? {context} : {})}));
     } catch {
       finishRewrite(key, "");
     }
@@ -415,7 +414,7 @@ async function attachButton(port) {
     if (requests.has(key)) return;
     const controller = new AbortController();
     requests.set(key, controller);
-    const options = {detailed:true, signal:controller.signal};
+    const options = {detailed:true, signal:controller.signal, selection:payload.selection === true};
     const rewritten = translate === true ? await translateDraft(text, fetch, options) : await rewriteDraft(text, context, fetch, options);
     requests.delete(key);
     if (controller.signal.aborted || socket.readyState !== WebSocket.OPEN) return;

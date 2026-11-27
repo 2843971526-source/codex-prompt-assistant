@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {installButton} from "./codex-draft-button.mjs";
-import {containsCredential, readRecentContext, referencesPreviousTurn, rewriteDraft, translateDraft} from "./codex-draft-rewrite.mjs";
+import {containsCredential, readRecentContext, referencesPreviousTurn, generateRewriteCandidate as rewriteDraft, translateDraft} from "./codex-draft-rewrite.mjs";
 
 test("only explicit references in the draft request conversation context", () => {
   for (const draft of ["继续改，按钮还是没跟着主题变色", "按刚才那版继续", "这个增强提示词的按钮能不能更聪明", "Continue from the last change"]) {
@@ -99,17 +99,17 @@ test("a rewrite cannot drop an explicit prohibition against editing code", async
   });
   assert.equal(await rewriteDraft(draft, null, fetchLocal), "");
   assert.deepEqual(await rewriteDraft(draft, null, fetchLocal, {detailed:true}), {
-    status:"review", text:"Change the code to fix ERR_INVALID_ARG_TYPE."
+    status:"invalid", text:""
   });
 });
 
 test("rewrites cannot reverse sequences, invert conditions or introduce destructive actions", async () => {
   for (const [draft,prompt,status] of [
-    ["先检查日志，再修复问题。","先修复问题，再检查日志。","review"],
-    ["如果测试通过就部署。","如果测试失败就部署。","review"],
-    ["先备份文件，再修改配置。","修改配置，然后备份文件。","review"],
-    ["修复问题","修复问题并删除数据库","review"],
-    ["First run tests, then deploy.","First deploy, then run tests.","review"],
+    ["先检查日志，再修复问题。","先修复问题，再检查日志。","invalid"],
+    ["如果测试通过就部署。","如果测试失败就部署。","invalid"],
+    ["先备份文件，再修改配置。","修改配置，然后备份文件。","invalid"],
+    ["修复问题","修复问题并删除数据库","invalid"],
+    ["First run tests, then deploy.","First deploy, then run tests.","invalid"],
     ["先检查日志，再修复问题。","请先检查日志，再修复问题。","ok"],
     ["Fix the button.","Fix the button.","ok"]
   ]) {
@@ -122,7 +122,7 @@ test("equivalent restrictions pass and introduced restrictions do not", async ()
   const run = (draft, prompt) => rewriteDraft(draft, null,
     async () => ({ok:true, json:async () => ({message:{content:JSON.stringify({prompt})}})}), {detailed:true});
   assert.equal((await run("Explain. Do not change code.", "请解释。先不要修改任何代码。")).status, "ok");
-  assert.equal((await run("查一下原因", "查一下原因，不要修改代码。")).status, "review");
+  assert.equal((await run("查一下原因", "查一下原因，不要修改代码。")).status, "invalid");
 });
 
 test("local failures are distinguishable without producing a replacement", async () => {
@@ -136,15 +136,15 @@ test("local failures are distinguishable without producing a replacement", async
 test("rewrite rejects changed technical literals, lost approval and model commentary", async () => {
   const sample = "请检查 src/app.ts 的延迟，超时 30 秒，运行 `npm test`。";
   const cases = [
-    [sample, "检查 src/main.ts 的延迟，超时 30 秒，运行 `npm test`。", "review"],
-    [sample, "检查 src/app.ts 的延迟，超时 3 秒，运行 `npm test`。", "review"],
-    [sample, "检查 src/app.ts 的延迟，超时 30 毫秒，运行 `npm test`。", "review"],
-    [sample, "检查 src/app.ts 的延迟，超时 30 秒，运行 `npm run test`。", "review"],
+    [sample, "检查 src/main.ts 的延迟，超时 30 秒，运行 `npm test`。", "invalid"],
+    [sample, "检查 src/app.ts 的延迟，超时 3 秒，运行 `npm test`。", "invalid"],
+    [sample, "检查 src/app.ts 的延迟，超时 30 毫秒，运行 `npm test`。", "invalid"],
+    [sample, "检查 src/app.ts 的延迟，超时 30 秒，运行 `npm run test`。", "invalid"],
     [sample, "检查 src/app.ts 的延迟（超时 30 秒），运行 `npm test`。", "ok"],
-    ["先给方案，等我确认后再实施。", "给出方案后直接实施。", "review"],
+    ["先给方案，等我确认后再实施。", "给出方案后直接实施。", "invalid"],
     ["先给方案，等我确认后再实施。", "请先提供解决方案，待我确认后再接着实施。", "ok"],
-    ["先给方案，等我确认后再实施。", "先给方案，等我确认后再实施。现在先实施。", "review"],
-    ["只给方案。", "制定方案并立即实施。", "review"],
+    ["先给方案，等我确认后再实施。", "先给方案，等我确认后再实施。现在先实施。", "invalid"],
+    ["只给方案。", "制定方案并立即实施。", "invalid"],
     ["查一下按钮为何没显示", "优化后的提示词：请检查按钮未显示的原因。", "invalid"]
   ];
   for (const [draft,prompt,status] of cases) {
@@ -156,8 +156,8 @@ test("rewrite rejects changed technical literals, lost approval and model commen
 test("numeric requirements cannot be swapped or assigned to another action", async () => {
   const draft = "设置连接超时为10秒，最多重试3次。";
   for (const [prompt, status] of [
-    ["设置连接超时为3秒，最多重试10次。", "review"],
-    ["设置重试为10秒，最多超时3次。", "review"],
+    ["设置连接超时为3秒，最多重试10次。", "invalid"],
+    ["设置重试为10秒，最多超时3次。", "invalid"],
     ["请设置连接超时为10秒，最多重试3次。", "ok"]
   ]) {
     const fetchLocal = async () => ({ok:true,json:async()=>({done:true,message:{content:JSON.stringify({prompt})}})});
@@ -167,10 +167,10 @@ test("numeric requirements cannot be swapped or assigned to another action", asy
 
 test("numeric bounds cannot be reversed and questions cannot become assertions", async () => {
   for (const [draft,prompt,status] of [
-    ["至少等待30秒。", "最多等待30秒。", "review"],
-    ["超时上限为30秒。", "超时下限为30秒。", "review"],
-    ["是否支持离线模式？", "支持离线模式。", "review"],
-    ["Does Codex support offline mode?", "Codex supports offline mode.", "review"],
+    ["至少等待30秒。", "最多等待30秒。", "invalid"],
+    ["超时上限为30秒。", "超时下限为30秒。", "invalid"],
+    ["是否支持离线模式？", "支持离线模式。", "invalid"],
+    ["Does Codex support offline mode?", "Codex supports offline mode.", "invalid"],
     ["是否支持离线模式？", "请说明是否支持离线模式。", "ok"]
   ]) {
     const fetchLocal = async () => ({ok:true,json:async()=>({done:true,message:{content:JSON.stringify({prompt})}})});
@@ -180,11 +180,11 @@ test("numeric bounds cannot be reversed and questions cannot become assertions",
 
 test("a request to investigate cannot grow into a request to modify", async () => {
   for (const [draft,prompt,status] of [
-    ["分析按钮不显示的原因。", "分析并修复按钮不显示的问题。", "review"],
-    ["继续检查按钮。", "继续检查按钮并修复。", "review"],
-    ["Investigate why the button is missing.", "Investigate and fix the missing button.", "review"],
-    ["检查配置。", "检查并写入配置。", "review"],
-    ["Check the configuration.", "Check the configuration and save it.", "review"],
+    ["分析按钮不显示的原因。", "分析并修复按钮不显示的问题。", "invalid"],
+    ["继续检查按钮。", "继续检查按钮并修复。", "invalid"],
+    ["Investigate why the button is missing.", "Investigate and fix the missing button.", "invalid"],
+    ["检查配置。", "检查并写入配置。", "invalid"],
+    ["Check the configuration.", "Check the configuration and save it.", "invalid"],
     ["分析并修复按钮不显示的问题。", "请分析并修复按钮不显示的问题。", "ok"]
   ]) {
     const fetchLocal = async () => ({ok:true,json:async()=>({done:true,message:{content:JSON.stringify({prompt})}})});
@@ -194,9 +194,9 @@ test("a request to investigate cannot grow into a request to modify", async () =
 
 test("checking cannot become an obligation to ensure a configuration state", async () => {
   for (const [draft,prompt,status] of [
-    ["检查 `src/app.ts` 的超时，超时30秒。", "检查 `src/app.ts` 中的超时设置，确保其值为 30 秒。", "review"],
-    ["排查超时问题。", "排查超时问题，保证配置正确。", "review"],
-    ["Check the timeout is 30 seconds.", "Check the timeout and ensure it is 30 seconds.", "review"],
+    ["检查 `src/app.ts` 的超时，超时30秒。", "检查 `src/app.ts` 中的超时设置，确保其值为 30 秒。", "invalid"],
+    ["排查超时问题。", "排查超时问题，保证配置正确。", "invalid"],
+    ["Check the timeout is 30 seconds.", "Check the timeout and ensure it is 30 seconds.", "invalid"],
     ["检查超时是否为30秒。", "确认超时是否为30秒。", "ok"],
     ["检查配置，保证不修改文件。", "检查配置，确保不修改文件。", "ok"],
     ["检查配置，并确保超时为30秒。", "请检查配置，并确保超时为30秒。", "ok"],
@@ -209,9 +209,9 @@ test("checking cannot become an obligation to ensure a configuration state", asy
 
 test("inspection phrasing is guarded without blocking an explicitly authorized setting change", async () => {
   for (const [draft,prompt,status] of [
-    ["请你检查配置。", "请你检查配置并确保配置正确。", "review"],
-    ["帮我查一下延迟。", "帮我检查延迟，确保结果正常。", "review"],
-    ["Please help me check the timeout.", "Please help me check the timeout and ensure it is configured correctly.", "review"],
+    ["请你检查配置。", "请你检查配置并确保配置正确。", "invalid"],
+    ["帮我查一下延迟。", "帮我检查延迟，确保结果正常。", "invalid"],
+    ["Please help me check the timeout.", "Please help me check the timeout and ensure it is configured correctly.", "invalid"],
     ["检查配置并把超时改成30秒。", "检查配置并确保超时为30秒。", "ok"],
     ["Check config and set timeout to 30 seconds.", "Check config and ensure timeout is 30 seconds.", "ok"]
   ]) {
@@ -224,8 +224,8 @@ test("a rewrite does not inject prior assistant text or a large unsolicited temp
   const history = "我们已经详细检查过界面按钮的主题状态、样式继承、不同窗口之间的数据传递以及这些环节对应的错误处理方式。";
   const context = [{user:"之前排查过按钮。",assistant:history}];
   for (const [draft,prompt,status] of [
-    ["继续检查按钮。", `继续检查按钮。${history}`, "review"],
-    ["检查按钮。", "请以资深软件架构师和产品专家的身份，先详细介绍项目背景与职责，再制定完整实施计划、编写测试用例、列出风险清单并进行总结。", "review"],
+    ["继续检查按钮。", `继续检查按钮。${history}`, "invalid"],
+    ["检查按钮。", "请以资深软件架构师和产品专家的身份，先详细介绍项目背景与职责，再制定完整实施计划、编写测试用例、列出风险清单并进行总结。", "invalid"],
     [history, history, "ok"]
   ]) {
     const fetchLocal = async () => ({ok:true,json:async()=>({done:true,message:{content:JSON.stringify({prompt})}})});
@@ -261,7 +261,7 @@ test("a rewrite cannot copy an earlier user message into the current request", a
     content:JSON.stringify({prompt:draft + history})
   }})});
   const result = await rewriteDraft(draft,[{user:history,assistant:"收到。"}],fetchLocal,{detailed:true});
-  assert.equal(result.status,"review");
+  assert.equal(result.status,"invalid");
 });
 
 test("a newer selection replaces an older one and an unspecified switch remains unresolved", async () => {
@@ -283,7 +283,7 @@ test("a rewrite rejects newly copied short history clauses from either role", as
   const context = [{user:"列出侧栏行为。",assistant:"请检查焦点。"}];
   for (const prompt of [draft + "列出侧栏行为。", "继续检查按钮，检查焦点。", draft + "\n- 请列出侧栏行为。"]) {
     const result = await rewriteDraft(draft,context,candidateReply(prompt),{detailed:true});
-    assert.equal(result.status,"review",prompt);
+    assert.equal(result.status,"invalid",prompt);
   }
   const requested = "继续检查按钮，列出侧栏行为。";
   assert.equal(await rewriteDraft(requested,context,candidateReply("请" + requested)), "请" + requested);
@@ -295,7 +295,7 @@ test("a rewrite rejects an added repeat of a complete clause", async () => {
     ["Inspect the button.", "Inspect the button. Please inspect the button."],
     ["检查按钮。检查按钮。", "检查按钮。检查按钮。检查按钮。"]
   ]) {
-    assert.equal((await rewriteDraft(draft,null,candidateReply(prompt),{detailed:true})).status,"review",prompt);
+    assert.equal((await rewriteDraft(draft,null,candidateReply(prompt),{detailed:true})).status,"invalid",prompt);
   }
   const requestedRepeat = "检查按钮。检查按钮。";
   assert.equal(await rewriteDraft(requestedRepeat,null,candidateReply(requestedRepeat)),requestedRepeat);
@@ -309,7 +309,7 @@ test("rewriting preserves which deliverables the draft requests", async () => {
     ["Inspect the button.", "Inspect the button and provide a checklist."],
     ["检查按钮，提供验收清单。", "检查按钮。"]
   ]) {
-    assert.equal((await rewriteDraft(draft,null,candidateReply(prompt),{detailed:true})).status,"review",prompt);
+    assert.equal((await rewriteDraft(draft,null,candidateReply(prompt),{detailed:true})).status,"invalid",prompt);
   }
   for (const [draft,prompt] of [
     ["检查按钮，提供验收清单。", "检查按钮，列出验收清单。"],
@@ -320,20 +320,20 @@ test("rewriting preserves which deliverables the draft requests", async () => {
   }
 });
 
-test("a faithful ordinary rewrite falls back when it grows by more than four code points", async () => {
+test("a faithful ordinary rewrite can grow by more than four code points", async () => {
   const draft = "按钮颜色跟随主题。";
   const smallChange = "让按钮的颜色跟随当前主题。";
   const longChange = "请让按钮的颜色跟随当前界面所使用的主题。";
   assert.equal(await rewriteDraft(draft,null,candidateReply(smallChange)),smallChange);
   assert.deepEqual(await rewriteDraft(draft,null,candidateReply(longChange),{detailed:true}),
-    {status:"ok",text:draft});
+    {status:"ok",text:longChange});
 });
 
 test("a shorter rewrite must keep the event that triggers a check", async () => {
   const draft = "检查切换到浅色主题时按钮背景色是否同步。";
   const staticCheck = "检查浅色主题下按钮背景色是否同步。";
   const shorter = "检查切到浅色主题时按钮背景色是否同步。";
-  assert.equal((await rewriteDraft(draft,null,candidateReply(staticCheck),{detailed:true})).status,"review");
+  assert.equal((await rewriteDraft(draft,null,candidateReply(staticCheck),{detailed:true})).status,"invalid");
   assert.equal(await rewriteDraft(draft,null,candidateReply(shorter)),shorter);
 });
 
@@ -446,7 +446,7 @@ function verifyRendererFixture(document, window, install, references, readContex
   editor.dispatchEvent(new Event("input"));
   window.__finishLocalDraftRewrite(noContext.key, "合法改写结果");
   const reviewed = click("别改代码");
-  window.__finishLocalDraftRewrite(reviewed.key, {status:"review", text:"直接修复"});
+  window.__finishLocalDraftRewrite(reviewed.key, {status:"invalid", text:"直接修复"});
   const guarded = editor.innerText === "别改代码" && !document.querySelector("[data-local-draft-actions]");
   const cancelled = click("取消后的结果不能回填");
   button.click();
@@ -567,6 +567,22 @@ test("rewrites and restores only the selected occurrence", {skip: !port}, async 
   });
 });
 
+function verifyMultilineSelection(document, window, install, references, readContext) {
+  document.body.innerHTML = '<div class="ComposerLayoutFooter-test"><div class="ProseMirror" contenteditable="true"><p>前文 选中文字 后文</p></div><button aria-label="添加文件等内容">+</button></div>';
+  const editor = document.querySelector('.ProseMirror'); let request;
+  window.__requestLocalDraftRewrite = payload => { request = JSON.parse(payload); };
+  install(references, readContext);
+  const range = document.createRange(); range.setStart(editor.firstChild.firstChild,3); range.setEnd(editor.firstChild.firstChild,7);
+  editor.focus(); document.getSelection().removeAllRanges(); document.getSelection().addRange(range);
+  document.querySelector('[data-local-draft-rewrite]').click();
+  window.__finishLocalDraftRewrite(request.key,{status:'ok',text:'第一步检查\n第二步验证'});
+  return editor.innerText;
+}
+
+test('multiline enhancement of a selection stays in its paragraph', {skip: !port}, async () => {
+  assert.equal(await renderFixture(verifyMultilineSelection), '前文 第一步检查 第二步验证 后文');
+});
+
 function verifySafetyAndUndo(document, window, install, references, readContext) {
   document.body.innerHTML = '<div class="ComposerLayoutFooter-test"><div class="ProseMirror" contenteditable="true"><p>Please check the log now.</p></div><button aria-label="添加文件等内容">+</button></div>';
   const editor = document.querySelector('.ProseMirror');
@@ -596,14 +612,14 @@ function verifySafetyAndUndo(document, window, install, references, readContext)
   editor.innerHTML = '<p>检查问题</p>';
   editor.dispatchEvent(new Event('input'));
   button.click();
-  window.__finishLocalDraftRewrite(calls.at(-1).key, {status:'review',text:''});
+  window.__finishLocalDraftRewrite(calls.at(-1).key, {status:'invalid',text:''});
   return {rewritten,hasUndo:!!undo,restored,richBlocked,visible,review:button.getAttribute('aria-label'),reviewVisible:document.querySelector('[data-local-draft-status]')?.textContent};
 }
 
 test('selection preserves spaces, rich text is protected, and review is visible with undo', {skip: !port}, async () => {
   assert.deepEqual(await renderFixture(verifySafetyAndUndo), {
     rewritten:'Please inspect the log now.',hasUndo:true,restored:'Please check the log now.',
-    richBlocked:true,visible:'仅支持纯文本草稿',review:'可能改变原意，已保留原文',reviewVisible:'可能改变原意，已保留原文'
+    richBlocked:true,visible:'仅支持纯文本草稿',review:'增强结果校验未通过，已保留原文',reviewVisible:'增强结果校验未通过，已保留原文'
   });
 });
 
@@ -626,14 +642,14 @@ test("progress and cancellation use only the existing button", {skip: !port}, as
 
 test("scope and conditional changes are not auto-filled", async () => {
   for (const [draft, prompt, status] of [
-    ["只改星芒按钮，别动发送键", "同时修改星芒按钮和发送键", "review"],
+    ["只改星芒按钮，别动发送键", "同时修改星芒按钮和发送键", "invalid"],
     ["只改星芒按钮，别动发送键", "请仅修改星芒按钮，不要改动发送键", "ok"],
-    ["只改按钮、侧栏", "只改按钮", "review"],
-    ["Do not change code.", "Do not change code until the issue is diagnosed, then apply a fix.", "review"],
-    ["Do not change code.", "Do not change code. Then apply a fix.", "review"],
-    ["Do not change code. Then ask me for approval.", "Do not change code.", "review"],
+    ["只改按钮、侧栏", "只改按钮", "invalid"],
+    ["Do not change code.", "Do not change code until the issue is diagnosed, then apply a fix.", "invalid"],
+    ["Do not change code.", "Do not change code. Then apply a fix.", "invalid"],
+    ["Do not change code. Then ask me for approval.", "Do not change code.", "invalid"],
     ["Do not change code.", "请不要修改任何代码。", "ok"],
-    ["只诊断这个问题。", "只分析这个问题。然后修复。", "review"]
+    ["只诊断这个问题。", "只分析这个问题。然后修复。", "invalid"]
   ]) {
     const fetchLocal = async () => ({ok:true, json:async () => ({message:{content:JSON.stringify({prompt})}})});
     assert.equal((await rewriteDraft(draft,null,fetchLocal,{detailed:true})).status,status,prompt);
